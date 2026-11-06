@@ -1,3 +1,4 @@
+
 import os
 import re
 import pickle
@@ -5,6 +6,7 @@ import streamlit as st
 
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.sequence import pad_sequences
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 
 # ==========================================
@@ -25,15 +27,11 @@ st.set_page_config(
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 MODEL_PATH = os.path.join(
-    BASE_DIR,
-    "models",
-    "textile_sentiment_lstm.keras"
+    BASE_DIR, "models", "textile_sentiment_lstm.keras"
 )
 
 TOKENIZER_PATH = os.path.join(
-    BASE_DIR,
-    "models",
-    "textile_tokenizer.pkl"
+    BASE_DIR, "models", "textile_tokenizer.pkl"
 )
 
 MAX_LEN = 100
@@ -74,7 +72,20 @@ except Exception as e:
 
 
 # ==========================================
-# 4. TEXT PREPROCESSING
+# 4. LOAD VADER SENTIMENT ANALYZER
+# ==========================================
+
+@st.cache_resource
+def load_vader():
+
+    return SentimentIntensityAnalyzer()
+
+
+analyzer = load_vader()
+
+
+# ==========================================
+# 5. TEXT PREPROCESSING
 # ==========================================
 
 def clean_review(text):
@@ -106,7 +117,7 @@ def clean_review(text):
 
 
 # ==========================================
-# 5. SENTIMENT PREDICTION
+# 6. HYBRID SENTIMENT PREDICTION
 # ==========================================
 
 def predict_sentiment(review):
@@ -118,12 +129,31 @@ def predict_sentiment(review):
             "No valid English words found in the review."
         )
 
-    # Convert text into numerical sequences
+    # --------------------------------------
+    # A. VADER SENTIMENT ANALYSIS
+    # --------------------------------------
+
+    vader_result = analyzer.polarity_scores(review)
+
+    vader_score = float(vader_result["compound"])
+
+    if vader_score >= 0.05:
+        vader_prediction = "Positive"
+
+    elif vader_score <= -0.05:
+        vader_prediction = "Negative"
+
+    else:
+        vader_prediction = "Neutral"
+
+    # --------------------------------------
+    # B. LSTM SENTIMENT PREDICTION
+    # --------------------------------------
+
     sequence = tokenizer.texts_to_sequences(
         [cleaned_text]
     )
 
-    # Padding
     padded = pad_sequences(
         sequence,
         maxlen=MAX_LEN,
@@ -131,42 +161,60 @@ def predict_sentiment(review):
         truncating="post"
     )
 
-    # LSTM prediction
-    score = float(
+    lstm_score = float(
         model.predict(padded, verbose=0)[0][0]
     )
 
-    # Classification thresholds
-    if score >= 0.60:
-        prediction = "Positive"
+    # Assumes the LSTM was trained with:
+    # 0 = Negative, 1 = Positive
 
-    elif score < 0.40:
-        prediction = "Negative"
+    if lstm_score >= 0.60:
+        lstm_prediction = "Positive"
+
+    elif lstm_score < 0.40:
+        lstm_prediction = "Negative"
 
     else:
-        prediction = "Neutral / Uncertain"
+        lstm_prediction = "Neutral / Uncertain"
 
-    return prediction, score, cleaned_text
+    # --------------------------------------
+    # C. COMBINE BOTH PREDICTIONS
+    # --------------------------------------
+
+    # VADER is used for the final prediction.
+    # LSTM provides an additional model prediction.
+
+    final_prediction = vader_prediction
+
+    return (
+        final_prediction,
+        vader_score,
+        lstm_score,
+        vader_prediction,
+        lstm_prediction,
+        cleaned_text
+    )
 
 
 # ==========================================
-# 6. STREAMLIT APPLICATION UI
+# 7. STREAMLIT APPLICATION UI
 # ==========================================
 
 st.title("👗 Textile Customer Review Sentiment Analysis")
 
 st.write(
     """
-    This application uses Natural Language Processing
-    and a trained LSTM Deep Learning model to analyze
-    textile customer reviews.
+    This application uses Natural Language Processing,
+    VADER Sentiment Analysis and a trained LSTM Deep Learning
+    model to analyze textile customer reviews.
     """
 )
 
-st.info("Enter a customer review below to analyze its sentiment.")
+st.info(
+    "Enter a customer review below to analyze its sentiment."
+)
 
 
-# Customer review input
 review = st.text_area(
     "Enter Customer Review:",
     placeholder="Example: This dress is beautiful and comfortable.",
@@ -175,7 +223,7 @@ review = st.text_area(
 
 
 # ==========================================
-# 7. ANALYZE SENTIMENT BUTTON
+# 8. ANALYZE SENTIMENT BUTTON
 # ==========================================
 
 if st.button("Analyze Sentiment", type="primary"):
@@ -188,9 +236,14 @@ if st.button("Analyze Sentiment", type="primary"):
 
         try:
 
-            prediction, score, cleaned_text = predict_sentiment(
-                review
-            )
+            (
+                prediction,
+                vader_score,
+                lstm_score,
+                vader_prediction,
+                lstm_prediction,
+                cleaned_text
+            ) = predict_sentiment(review)
 
             st.subheader("📊 Sentiment Prediction Result")
 
@@ -204,18 +257,43 @@ if st.button("Analyze Sentiment", type="primary"):
 
             else:
 
-                st.warning("Neutral / Uncertain 😐")
+                st.warning("Neutral Review 😐")
 
-            st.metric(
-                label="Model Output Score",
-                value=f"{score:.4f}"
+            # Final prediction
+            st.markdown("### Final Sentiment")
+            st.write(f"**{prediction}**")
+
+            # VADER result
+            st.markdown("### VADER Analysis")
+
+            st.write(
+                f"VADER Prediction: **{vader_prediction}**"
             )
 
-            st.write("**Cleaned Review:**")
+            st.metric(
+                "VADER Compound Score",
+                f"{vader_score:.4f}"
+            )
+
+            # LSTM result
+            st.markdown("### LSTM Deep Learning Analysis")
+
+            st.write(
+                f"LSTM Prediction: **{lstm_prediction}**"
+            )
+
+            st.metric(
+                "LSTM Model Output Score",
+                f"{lstm_score:.4f}"
+            )
+
+            # Cleaned text
+            st.markdown("### Cleaned Review")
             st.write(cleaned_text)
 
-            st.progress(
-                max(0.0, min(1.0, score))
+            st.caption(
+                "Note: The final sentiment currently follows "
+                "VADER. LSTM prediction is displayed separately."
             )
 
         except Exception as e:
@@ -225,12 +303,12 @@ if st.button("Analyze Sentiment", type="primary"):
 
 
 # ==========================================
-# 8. FOOTER
+# 9. FOOTER
 # ==========================================
 
 st.divider()
 
 st.caption(
-    "Developed using Python, NLP, TensorFlow, "
-    "Keras and LSTM Deep Learning."
+    "Developed using Python, NLP, VADER, "
+    "TensorFlow, Keras and LSTM Deep Learning."
 )
